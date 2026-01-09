@@ -1,0 +1,179 @@
+import { VectorTileFeature } from "@mapbox/vector-tile"
+import { ILayerVisualizer } from "./ILayerVisualizer"
+import { SymbolRenderLayer } from "../SymbolRenderLayer"
+import { warnOnce } from "maplibre-gl/src/util/util"
+
+export class SymbolFeature {
+    constructor() {
+        this.featureId = 0
+        this.textColor = Cesium.Color.BLACK.clone()
+        this.textSize = 12
+        this.coordinates = []
+    }
+}
+
+/**@type {Cesium.Cartesian3} */
+let scratchDirectionToEye = null
+/**@type {Cesium.Cartesian3} */
+let scratchSurfaceNormal = null
+
+export class SymbolLayerVisualizer extends ILayerVisualizer {
+    constructor(layers, tile) {
+        if (scratchDirectionToEye === null) {
+            scratchDirectionToEye = new Cesium.Cartesian3()
+            scratchSurfaceNormal = new Cesium.Cartesian3()
+        }
+
+        super(layers, tile)
+
+        /**@type {Cesium.Label[]} */
+        this.labels = []
+        this.primitive = null
+        this.dotCutOff = 0.0035
+    }
+
+    /**
+     * 对符号进行地平线剔除
+     * @param {Cesium.Cartesian3} positionWC 
+     * @param {Cesium.Cartesian3} cameraPositionWC 
+     */
+    isOccluded(cameraPositionWC, positionWC) {
+        /*
+        如下图，o为符号锚点，up为椭球面过锚点o的法线，tangent为过锚点o的切线，eye为相机位置。
+        可见，当锚点在地平线以下时，eye方向与up方向夹角小于90°。
+        up
+        ^
+        |
+        o —— —— > tangent
+         \
+          \
+           eye
+        */
+        const eyeDir = Cesium.Cartesian3.subtract(cameraPositionWC, positionWC, scratchDirectionToEye)
+        Cesium.Cartesian3.normalize(eyeDir, eyeDir)
+        const up = Cesium.Cartesian3.normalize(positionWC, scratchSurfaceNormal)
+        return Cesium.Cartesian3.dot(eyeDir, up) < this.dotCutOff
+    }
+
+    /**
+     * @param {VectorTileFeature[]} features 
+     * @param {SymbolRenderLayer} layer 
+     * @param {Cesium.frameState} frameState 
+     * @param {VectorTileset} tileset 
+     */
+    addLayer(features, layer, frameState, tileset) {
+        const style = layer.style
+        const { tile, labels } = this
+        const rectangle = tile.rectangle
+
+        function addText(coord, text, font, textSize, textColor, outlineWidth, outlineColor) {
+            if (!Cesium.Rectangle.contains(rectangle, Cesium.Cartographic.fromDegrees(coord[0], coord[1]))) {
+                return
+            }
+            const label = new Cesium.Label({
+                position: Cesium.Cartesian3.fromDegrees(coord[0], coord[1]),
+                text,
+                font: textSize + 'px ' + font,
+                fillColor: textColor,
+                style: outlineWidth && Cesium.LabelStyle.FILL_AND_OUTLINE,
+                outlineWidth: outlineWidth * textSize,
+                outlineColor,
+                //禁用深度测试
+                disableDepthTestDistance: Infinity
+            })
+            labels.push(label)
+            layer.labels.push(label)
+        }
+
+        for (const sourceFeature of features) {
+            const feature = sourceFeature.toGeoJSON(tile.x, tile.y, tile.z)
+            if (!feature.geometry) continue
+            const properties = sourceFeature.properties
+
+            //读取图层样式属性
+            const iconImage = style.layout.getDataValue('icon-image', tile.z, sourceFeature)
+            const textField = style.layout.getDataValue('text-field', tile.z, sourceFeature)
+            let text = textField && style.layout.resolveTokens(properties, textField)
+            if (iconImage) {
+                warnOnce('symbol图层：不支持图标')
+                continue
+            }
+            if (!text) {
+                continue
+            }
+            const maxWidth = style.layout.getDataValue('text-max-width', tile.z, sourceFeature) * 3
+            const textRotationAlignment = style.layout.getDataValue('text-rotation-alignment', tile.z, sourceFeature)
+            const textPitchAlignment = style.layout.getDataValue('text-pitch-alignment', tile.z, sourceFeature)
+            if (text.length > maxWidth) {
+                warnOnce('symbol图层： 不支持 text-max-width，无自动换行效果')
+            }
+            if (textRotationAlignment === 'map') {
+                warnOnce('symbol图层：text-rotation-alignment 仅支持 viewport')
+            }
+            if (textPitchAlignment === 'map') {
+                warnOnce('symbol图层：text-pitch-alignment 仅支持 viewport')
+            }
+
+            const font = style.layout.getDataValue('text-font', tile.z, sourceFeature)
+            const textSize = style.layout.getDataValue('text-size', tile.z, sourceFeature)
+            const textColor = style.convertColor(style.paint.getDataValue('text-color', tile.z, sourceFeature))
+            const outlineColor = style.convertColor(style.paint.getDataValue('text-halo-color', tile.z, sourceFeature))
+            const outlineWidth = style.paint.getDataValue('text-halo-width', tile.z, sourceFeature)
+
+            const geometryType = feature.geometry.type
+            const coordinates = feature.geometry.coordinates
+            if (geometryType == 'Point') {
+                addText(coordinates, text, font, textSize, textColor, outlineWidth, outlineColor)
+            }
+            else if (geometryType == 'MultiPoint') {
+                coordinates.forEach(coord => {
+                    addText(coord, text, font, textSize, textColor, outlineWidth, outlineColor)
+                })
+            }
+            else {
+                warnOnce('symbol图层：不支持符号沿线布局');
+            }
+        }
+
+        this.layers.push(layer)
+    }
+
+    createPrimitive() {
+        //所有图层的文字共用一个LabelCollection
+        //注意：这样文字就没有了“图层”的特征了，渲染顺序可能和样式配置的不一致
+        //优化：参考 maplibre-gl 的符号系统实现，但工作量巨大，如有需求建议使用商业版（Mesh-3D矢量地图引擎）
+
+        const primitive = new Cesium.LabelCollection()
+        for (let i = 0; i < this.labels.length; i++) {
+            this.labels[i] = primitive.add(this.labels[i])
+        }
+        this.primitive = primitive
+    }
+
+    update(frameState, tileset) {
+        if (!this.primitive && this.labels?.length) {
+            this.createPrimitive()
+        }
+
+        //我们禁用了 label 的深度测试，这里剔除中心位置在地球背面的符号
+        const cameraPositionWC = frameState.camera.positionWC
+        for (const label of this.labels) {
+            label.show = !this.isOccluded(cameraPositionWC, label.position)
+        }
+
+        //性能优化：这里应该进行自动避让处理
+
+        if (this.primitive) {
+            this.primitive.update(frameState)
+        }
+    }
+
+    destroy() {
+        this.primitive = this.primitive && this.primitive.destroy()
+        super.destroy()
+    }
+
+    isDestroyed() {
+        return false
+    }
+}

@@ -1,0 +1,309 @@
+import { VectorTileLOD } from "./VectorTileLOD"
+import { StyleLayer } from "./style/StyleLayer"
+import './layers/index'
+import { VectorTileRenderList } from "./VectorTileRenderList"
+import { Sources } from "./sources"
+import { ISource } from "./sources/ISource"
+import { warnOnce } from "maplibre-gl/src/util/util"
+
+export class VectorTileset {
+    /**
+     * @param {object} options 
+     * @param {string|import('@maplibre/maplibre-gl-style-spec').StyleSpecification} options.style
+     * @param {boolean} [options.showTileColor=false]
+     */
+    constructor(options) {
+        this.maximumLevel = 24
+        this.show = true
+        this.showTileColor = !!options.showTileColor
+        this.ready = false
+        this.tilingScheme = new Cesium.WebMercatorTilingScheme()
+
+        this.readyEvent = new Cesium.Event()
+        this.errorEvent = new Cesium.Event()
+
+        this._styleJson = null
+        this._style = options.style
+        this._rootTiles = []
+        this._cacheTiles = []
+        this._tilesToRender = []
+        /**@type {StyleLayer[]} */
+        this._styleLayers = []
+        /**@type {VectorTileRenderList} */
+        this._renderList = new VectorTileRenderList(this._styleLayers)
+        this.numLoading = 0
+        this.numInitializing = 0
+        /**@type {Cesium.Texture} */
+        this.tileIdTexture = null
+
+        requestAnimationFrame(() => {
+            this.init()
+        })
+    }
+
+    async init() {
+        let style = this._style
+        if (!style) {
+            this.errorEvent.raiseEvent(new Error('请传入 style 参数'))
+            return
+        }
+
+        this.path = ''
+        if (typeof style == 'string') {
+            this.path = style.split('/').slice(0, -1).join('/')
+            if (this.path) this.path += '/'
+            style = await Cesium.Resource.fetchJson(style)
+        }
+
+        //初始化数据源
+
+        /** @type {{[sourceId:string]:ISource}}*/
+        this.sources = {}
+        for (const sourceId in style.sources) {
+            /**@type {import('@maplibre/maplibre-gl-style-spec').SourceSpecification} */
+            const sourceParams = style.sources[sourceId]
+            const SourceCls = Sources[sourceParams.type]
+            if (SourceCls) {
+                this.sources[sourceId] = new SourceCls(sourceParams, this.path)
+                try {
+                    await this.sources[sourceId].init()
+                    this.maximumLevel = Math.min(sourceParams.maxzoom || 24, this.maximumLevel)
+                } catch (err) {
+                    this.errorEvent.raiseEvent(err)
+                }
+            }
+        }
+
+        //初始化样式图层
+        for (let i = 0; i < style.layers.length; i++) {
+            this._styleLayers[i] = new StyleLayer(style.layers[i])
+        }
+
+        //创建顶级瓦片LOD
+        const numX = this.tilingScheme.getNumberOfXTilesAtLevel(0)
+        const numY = this.tilingScheme.getNumberOfYTilesAtLevel(0)
+        let i = 0
+        for (let y = 0; y < numY; y++) {
+            for (let x = 0; x < numX; x++) {
+                var tile = new VectorTileLOD({
+                    parent: this, x, y, z: 0,
+                    tilingScheme: this.tilingScheme
+                })
+                tile.createChildren()
+                this._rootTiles[i++] = tile
+            }
+        }
+
+        //初始化渲染队列
+        this._renderList.init()
+
+        this._styleJson = style
+        this.ready = true
+        this.readyEvent.raiseEvent(this)
+    }
+
+    //更新瓦片id纹理，用于裁剪超出瓦片边界的像素
+    executeTileIdCommands(frameState) {
+        const tileIdCommands = this._renderList.tileIdCommands
+
+        if (tileIdCommands.length > 0) {
+            const context = frameState.context
+            /**@type {Cesium.FrameBuffer} */
+            let tileIdFbo = this._tileIdFbo
+            if (!tileIdFbo) {
+                tileIdFbo = new Cesium.FramebufferManager({
+                    depthStencil: true,
+                    supportsDepthTexture: true,
+                })
+                this._tileIdFbo = tileIdFbo
+                this._idClearCommand = new Cesium.ClearCommand({
+                    color: new Cesium.Color(0.0, 0.0, 0.0, 0.0),
+                    depth: 1.0,
+                    stencil: 0.0,
+                })
+            }
+            const pixelDatatype = context.floatingPointTexture
+                ? Cesium.PixelDatatype.FLOAT
+                : Cesium.PixelDatatype.UNSIGNED_BYTE;
+            const width = context.drawingBufferWidth
+            const height = context.drawingBufferHeight
+            tileIdFbo.update(context, width, height, 1, pixelDatatype)
+            tileIdFbo.clear(context, this._idClearCommand)
+
+            const framebuffer = tileIdFbo.framebuffer
+            for (const tileIdCommand of tileIdCommands) {
+                tileIdCommand.framebuffer = framebuffer
+                tileIdCommand.execute(context)
+            }
+
+            this.tileIdTexture = tileIdFbo.getColorTexture(0)
+        }
+    }
+
+    update(frameState) {
+        if (!this.ready || !this.show) return
+
+        if (frameState.context.webgl2) {
+            warnOnce('webgl2模式下贴地线面的支持将导致性能下降')
+        }
+
+        const renderList = this._renderList
+        //清空渲染队列
+        renderList.beginFrame()
+
+        this.numInitializing = 0
+
+        /**@type {Cesium.Globe} */
+        const scene = frameState.camera._scene
+        const globe = scene.globe
+        const globeSuspendLodUpdate = globe._surface._debug.suspendLodUpdate
+        this.scene = scene
+
+        // 获取可见瓦片
+        // 优化：采用更高效的LOD调度算法，获取当前帧实际可渲染到屏幕的瓦片，避免出现瓦片层级切换时候出现闪烁
+
+        /**@type {VectorTileLOD[]} */
+        const tilesToRender = globeSuspendLodUpdate ? this._tilesToRender : getTilesToRender(frameState, this)
+
+        //瓦片排序，决定瓦片加载瓦片数据、初始化的优先级
+        //优化：采用更精细、高效的优先级策略
+        if (!globeSuspendLodUpdate) {
+            tilesToRender.sort((a, b) => a.distanceToCamera - b.distanceToCamera)
+        }
+
+        //更新瓦片状态：请求瓦片数据，创建渲染图层，初始化等
+        for (const tile of tilesToRender) {
+            tile.lastVisitTime = frameState.frameNumber
+            tile.expired = false
+            tile.update(frameState, renderList, this)
+        }
+
+        //渲染图层分组、排序
+        const orderedRenderLayers = renderList.getList()
+        //获取渲染命令（DrawCommand），渲染图层内部可以使用Primitive、PolylineCollection、LabelCollection、BillboardCollection等API，
+        //也可以自定义DrawCommand
+        for (const renderLayer of orderedRenderLayers) {
+            renderLayer.update(frameState, this)
+        }
+        //瓦片颜色、深度
+        frameState.commandList.push(...renderList.tileCommands)
+
+        this.executeTileIdCommands(frameState)
+
+        //释放过期瓦片
+        //优化：使用更高效的内存缓存管理策略
+        const expiredTiles = []
+        for (const cacheTile of this._cacheTiles) {
+            if (cacheTile.lastVisitTime < frameState.frameNumber) {
+                if (!cacheTile.expired) expiredTiles.push(cacheTile)
+            }
+        }
+        expiredTiles.sort((a, b) => a.lastVisitTime - b.lastVisitTime)
+        if (expiredTiles.length > 100) {
+            for (const expiredTile of expiredTiles) {
+                expiredTile.unload()
+                expiredTile.expired = true
+                if (expiredTiles.length <= 50) break
+            }
+        }
+    }
+
+    destroy() {
+        const scene = this.scene
+        const rootTiles = this._rootTiles
+        this.scene = null
+        if (scene && scene.primitives.contains(this)) {
+            scene.primitives.remove(this)
+        }
+
+        if (rootTiles) {
+            for (const tile of rootTiles) {
+                tile.destroy()
+            }
+            rootTiles.length = 0
+            this._rootTiles = null
+        }
+        if (this._cacheTiles) {
+            this._cacheTiles.length = 0
+            this._cacheTiles = null
+        }
+
+        if (this.sources) {
+            for (const key in this.sources) {
+                if (Object.hasOwnProperty.call(this.sources, key)) {
+                    const source = this.sources[key];
+                    source.destroy()
+                }
+            }
+            this.sources = null
+        }
+        this._styleLayers = null
+
+        if (this._renderList) {
+            this._renderList.destroy()
+            this._renderList = null
+        }
+
+        if (this._tilesToRender) {
+            this._tilesToRender.length = 0
+            this._tilesToRender = null
+        }
+
+        if (this._tileIdFbo) {
+            this._tileIdFbo.destroy()
+            this.tileIdTexture = null
+            this._tileIdFbo = null
+            this._idClearCommand = null
+        }
+
+        this._styleJson = null
+    }
+
+    isDestroyed() {
+        return false
+    }
+}
+
+/**
+ * 遍历LOD四叉树，获取所有可见瓦片
+ * @param {Cesium.FrameState} frameState 
+ * @param {VectorTileset} tileset 
+ * @returns 
+ */
+function getTilesToRender(frameState, tileset) {
+    const queue = [
+        ...tileset._rootTiles
+    ]
+    const tilesToRender = tileset._tilesToRender
+    const visitor = {
+        //当see大于阈值，继续查找子级瓦片
+        visitChildren(tile) {
+            if (tile.z >= tileset.maximumLevel) {
+                return tilesToRender.push(tile)
+            }
+
+            if (tile.children.length == 0) {
+                tile.createChildren()
+                for (const child of tile.children) {
+                    tileset._cacheTiles.push(child)
+                }
+            }
+            for (const child of tile.children) {
+                queue.push(child)
+            }
+        },
+        //否则使用当前瓦片填充视口
+        accept(tile) {
+            tilesToRender.push(tile)
+        }
+    }
+
+    tilesToRender.length = 0
+
+    do {
+        const tile = queue.shift()
+        tile.visit(frameState, visitor)
+    } while (queue.length > 0);
+
+    return tilesToRender
+}

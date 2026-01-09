@@ -1,0 +1,45 @@
+import { ISource } from "./ISource";
+import { registerSource } from "./registerSource";
+import { VectorTile } from '@mapbox/vector-tile'
+import Pbf from 'pbf'
+
+export class VectorSource extends ISource {
+    constructor(styleSource, path) {
+        super(styleSource, path)
+    }
+
+    async init() {
+        const sourceParams = this.styleSource
+        let url = sourceParams.url
+        if (url && !sourceParams.tiles) {
+            url = /^((http)|(https)|(data:)|\/)/.test(url) ? url : this.path + sourceParams.url
+            try {
+                const metadata = await Cesium.Resource.fetchJson(url)
+                for (const key in metadata) {
+                    if (!sourceParams[key]) {
+                        sourceParams[key] = metadata[key]
+                    }
+                }
+            } catch (err) {
+                this.errorEvent.raiseEvent(err)
+            }
+        }
+    }
+
+    async requestTile(x, y, z) {
+        const sourceParams = this.styleSource
+        if (!sourceParams.tiles || !sourceParams.tiles.length) return
+        let tileUrl = sourceParams.tiles[0].replace('{x}', x).replace('{y}', y).replace('{z}', z)
+        tileUrl = /^((http)|(https)|(data:)|\/)/.test(tileUrl) ? tileUrl : this.path + tileUrl
+
+        try {
+            const tileBuf = await (fetch(tileUrl).then(res => res.arrayBuffer()));
+            const tileData = new VectorTile(new Pbf(tileBuf))
+            return tileData
+        } catch (err) {
+            this.errorEvent.raiseEvent(err)
+        }
+    }
+}
+
+registerSource('vector', VectorSource)
