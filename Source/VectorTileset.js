@@ -26,15 +26,19 @@ export class VectorTileset {
         this._style = options.style
         this._rootTiles = []
         this._cacheTiles = []
+        this._tilesToUpdate = []
         this._tilesToRender = []
         /**@type {StyleLayer[]} */
         this._styleLayers = []
         /**@type {VectorTileRenderList} */
         this._renderList = new VectorTileRenderList(this._styleLayers)
         this.numLoading = 0
+        this.maxLoading = 6
         this.numInitializing = 0
+        this.maxInitializing = 6
         /**@type {Cesium.Texture} */
         this.tileIdTexture = null
+        this.zoom = 0
 
         requestAnimationFrame(() => {
             this.init()
@@ -163,19 +167,32 @@ export class VectorTileset {
         // 优化：采用更高效的LOD调度算法，获取当前帧实际可渲染到屏幕的瓦片，避免出现瓦片层级切换时候出现闪烁
 
         /**@type {VectorTileLOD[]} */
-        const tilesToRender = globeSuspendLodUpdate ? this._tilesToRender : getTilesToRender(frameState, this)
+        const tilesToUpdate = getTilesToUpdate(frameState, this)
+        // const tilesToUpdate = globeSuspendLodUpdate ? this._tilesToUpdate : getTilesToUpdate(frameState, this)
 
         //瓦片排序，决定瓦片加载瓦片数据、初始化的优先级
         //优化：采用更精细、高效的优先级策略
         if (!globeSuspendLodUpdate) {
-            tilesToRender.sort((a, b) => a.distanceToCamera - b.distanceToCamera)
+            tilesToUpdate.sort((a, b) => a.distanceToCamera - b.distanceToCamera)
         }
 
         //更新瓦片状态：请求瓦片数据，创建渲染图层，初始化等
-        for (const tile of tilesToRender) {
+        for (const tile of tilesToUpdate) {
             tile.lastVisitTime = frameState.frameNumber
             tile.expired = false
             tile.update(frameState, renderList, this)
+        }
+
+        /**@type {VectorTileLOD[]} */
+        const tilesToRender = globeSuspendLodUpdate ? this._tilesToRender : getTilesToRender(tilesToUpdate, this._tilesToRender)
+        if (!globeSuspendLodUpdate) {
+            tilesToRender.sort((a, b) => a.distanceToCamera - b.distanceToCamera)
+        }
+        //渲染瓦片内容
+        for (const tile of tilesToRender) {
+            tile.lastVisitTime = frameState.frameNumber
+            tile.expired = false
+            tile.render(frameState, renderList, this)
         }
 
         //渲染图层分组、排序
@@ -183,7 +200,7 @@ export class VectorTileset {
         //获取渲染命令（DrawCommand），渲染图层内部可以使用Primitive、PolylineCollection、LabelCollection、BillboardCollection等API，
         //也可以自定义DrawCommand
         for (const renderLayer of orderedRenderLayers) {
-            renderLayer.update(frameState, this)
+            renderLayer.render(frameState, this)
         }
         //瓦片颜色、深度
         frameState.commandList.push(...renderList.tileCommands)
@@ -244,6 +261,11 @@ export class VectorTileset {
             this._renderList = null
         }
 
+        if (this._tilesToUpdate) {
+            this._tilesToUpdate.length = 0
+            this._tilesToUpdate = null
+        }
+
         if (this._tilesToRender) {
             this._tilesToRender.length = 0
             this._tilesToRender = null
@@ -265,21 +287,26 @@ export class VectorTileset {
 }
 
 /**
- * 遍历LOD四叉树，获取所有可见瓦片
+ * 遍历LOD四叉树，获取所有可见瓦片，取离相机最近的一个瓦片的 z 作为全局缩放参数 zoom
  * @param {Cesium.FrameState} frameState 
  * @param {VectorTileset} tileset 
  * @returns 
  */
-function getTilesToRender(frameState, tileset) {
+function getTilesToUpdate(frameState, tileset) {
     const queue = [
         ...tileset._rootTiles
     ]
-    const tilesToRender = tileset._tilesToRender
+    const tilesToUpdate = tileset._tilesToUpdate
+    let zoom = 24, nearDist = Infinity
     const visitor = {
         //当see大于阈值，继续查找子级瓦片
         visitChildren(tile) {
             if (tile.z >= tileset.maximumLevel) {
-                return tilesToRender.push(tile)
+                if (tile.distanceToCamera < nearDist) {
+                    nearDist = tile.distanceToCamera
+                    zoom = tile.z
+                }
+                return tilesToUpdate.push(tile)
             }
 
             if (tile.children.length == 0) {
@@ -294,16 +321,117 @@ function getTilesToRender(frameState, tileset) {
         },
         //否则使用当前瓦片填充视口
         accept(tile) {
-            tilesToRender.push(tile)
+            if (tile.distanceToCamera < nearDist) {
+                nearDist = tile.distanceToCamera
+                zoom = tile.z
+            }
+            tilesToUpdate.push(tile)
         }
     }
 
-    tilesToRender.length = 0
+    tilesToUpdate.length = 0
 
     do {
         const tile = queue.shift()
         tile.visit(frameState, visitor)
     } while (queue.length > 0);
+
+    tileset.zoom = zoom
+
+    return tilesToUpdate
+}
+
+/**
+ * 获取可渲染瓦片
+ * @param {VectorTileLOD[]} tilesToUpdate 
+ * @param {VectorTileLOD[]} tilesToRender 
+ * @returns 
+ */
+function getTilesToRender(tilesToUpdate, tilesToRender) {
+    const cache = new Map()
+    for (const newTile of tilesToUpdate) {
+        if (newTile.renderable) {
+            cache.set(newTile, true)
+        }
+    }
+
+    //在当前可渲染瓦片队列中，找出上一帧所有可渲染瓦片的后代节点瓦片，只有当后代节点瓦片都可渲染才被替代
+    const descendantsList = []
+    for (let i = 0; i < tilesToRender.length; i++) {
+        const oldTile = tilesToRender[i];
+
+        oldTile.renderable = cache.has(oldTile)
+        if (oldTile.renderable) continue//前后两帧都可见，不需要特殊处理
+
+        const descendants = {
+            tiles: [],
+            total: 0,
+            renderable: 0
+        }
+        descendantsList[i] = descendants
+
+        for (const newTile of tilesToUpdate) {
+            const dz = newTile.z - oldTile.z
+            if (dz === 0) {
+                continue
+            }
+            else if (dz > 0) {//针对需要后代瓦片替换祖先瓦片的情况：先记录所有可见的后代瓦片，并统计可渲染后代瓦片数量
+                const scale = Math.pow(2, dz),
+                    newAncestorX = Math.floor(newTile.x / scale),
+                    newAncestorY = Math.floor(newTile.y / scale)
+
+                if (newAncestorX === oldTile.x && newAncestorY === oldTile.y) {
+                    descendants.total++
+                    descendants.tiles.push(newTile)
+                    if (newTile.renderable) descendants.renderable++
+                }
+            }
+            else {//针对需要祖先瓦片覆盖后代瓦片的情况：祖先瓦片可渲染则显示，否则继续显示后代瓦片
+                const scale = Math.pow(2, -dz),
+                    oldAncestorX = Math.floor(oldTile.x / scale),
+                    oldAncestorY = Math.floor(oldTile.y / scale)
+
+                if (oldAncestorX === newTile.x && oldAncestorY === newTile.y) {
+                    oldTile.renderable = !newTile.renderable
+                }
+            }
+        }
+    }
+
+    //针对后代瓦片替换祖先瓦片的情况：只有所有可见的后代瓦片都可渲染，才显示后代瓦片，否则继续显示祖先瓦片
+    for (let i = 0; i < tilesToRender.length; i++) {
+        const oldTile = tilesToRender[i];
+        const descendants = descendantsList[i]
+        if (descendants && descendants.total) {
+            const descendantsRenderable = descendants.total === descendants.renderable
+            oldTile.renderable = !descendantsRenderable
+            for (const descendantTile of descendants.tiles) {
+                descendantTile.renderable = descendantsRenderable
+            }
+        }
+    }
+
+    //从 tilesToUpdate 和 tilesToRender 中筛选最终可渲染的瓦片
+
+    cache.clear()
+
+    let length = tilesToRender.length
+    for (let i = 0; i < length; i++) {
+        const tileToRender = tilesToRender.shift()
+        if (tileToRender.renderable) {
+            tilesToRender.push(tileToRender)
+            cache.set(tileToRender, true)
+        }
+    }
+
+    length = tilesToUpdate.length
+    for (let i = 0; i < length; i++) {
+        const tileToUpdate = tilesToUpdate[i]
+        if (tileToUpdate.renderable && !cache.has(tileToUpdate)) {
+            tilesToRender.push(tileToUpdate)
+            cache.set(tileToUpdate, true)
+        }
+    }
 
     return tilesToRender
 }
