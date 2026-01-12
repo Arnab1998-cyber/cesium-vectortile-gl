@@ -81,6 +81,7 @@ export class SymbolLayerVisualizer extends ILayerVisualizer {
                 //禁用深度测试
                 disableDepthTestDistance: Infinity
             })
+            label.batchId = labels.length
             labels.push(label)
             layer.labels.push(label)
         }
@@ -147,25 +148,76 @@ export class SymbolLayerVisualizer extends ILayerVisualizer {
         for (let i = 0; i < this.labels.length; i++) {
             this.labels[i] = primitive.add(this.labels[i])
         }
+
+        /**@type {SymbolRenderLayer[]} */
+        const layers = this.layers
+        for (const layer of layers) {
+            for (let i = 0; i < layer.labels.length; i++) {
+                layer.labels[i] = this.labels[layer.labels[i].batchId]
+            }
+        }
+
         this.primitive = primitive
     }
 
     update(frameState, tileset) {
+        if (this.state !== 'none') return
+
         if (!this.primitive && this.labels?.length) {
             this.createPrimitive()
-        }
-
-        //我们禁用了 label 的深度测试，这里剔除中心位置在地球背面的符号
-        const cameraPositionWC = frameState.camera.positionWC
-        for (const label of this.labels) {
-            label.show = !this.isOccluded(cameraPositionWC, label.position)
         }
 
         //性能优化：这里应该进行自动避让处理
 
         if (this.primitive) {
+            this.commandList.length = 0
+            const preCommandList = frameState.commandList
+            frameState.commandList = this.commandList
             this.primitive.update(frameState)
+            frameState.commandList = preCommandList
+
+            if (this.state === 'none' && preCommandList.length > 0) {
+                this.setState('done')
+            }
+            if (this.primitive._state === Cesium.PrimitiveState.FAILED) {
+                this.setState('error')
+            }
         }
+        else if (this.state === 'none' && this.labels.length === 0) {
+            this.setState('done')
+        }
+    }
+
+    render(frameState, tileset) {
+        if (this.state !== 'done') return
+
+        const cameraPositionWC = frameState.camera.positionWC
+
+        /**@type {SymbolRenderLayer[]} */
+        const layers = this.layers
+        for (const layer of layers) {
+            for (let i = 0; i < layer.labels.length; i++) {
+                const style = layer.style, zoom = tileset.zoom
+                layer.labels[i].show = true
+                if (layer.visibility === 'none' || zoom < style.minzoom || zoom >= style.maxzoom) {
+                    layer.labels[i].show = false
+                }
+            }
+        }
+
+        for (const label of this.labels) {
+            if (label.show) label.show = !this.isOccluded(cameraPositionWC, label.position)
+        }
+
+        if (this.primitive) {
+            this.commandList.length = 0
+            const preCommandList = frameState.commandList
+            frameState.commandList = this.commandList
+            this.primitive.update(frameState)
+            frameState.commandList = preCommandList
+        }
+
+        super.render(frameState)
     }
 
     destroy() {

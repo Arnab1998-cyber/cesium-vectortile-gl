@@ -361,6 +361,8 @@ void main()
                 layerCommand.count = count
                 layerCommandList.push(layerCommand)
             }
+
+            layer.state = 'done'
         }
 
         //标记 drawCommand 创建完成
@@ -389,7 +391,7 @@ void main()
                 this.primitive.update(frameState)
             } catch (err) {//如果报错，下一帧就不要再执行 update 了，以免重复打印错误信息
                 this.geometryInstances = []
-                this.state = 'error'
+                this.setState('error')
                 if (err.stack) console.trace(err.stack)
                 else console.error(err);
                 return
@@ -398,6 +400,10 @@ void main()
             //使用合批后的 drawCommand 创建副本，为渲染图层分配 drawCommand 
             if (batchedCommandList.length > 0) {
                 this.createLayerCommands(batchedCommandList, tileset)
+            }
+
+            if (this.primitive._state === Cesium.PrimitiveState.FAILED) {
+                this.setState('error')
             }
 
             //恢复系统的 commandList

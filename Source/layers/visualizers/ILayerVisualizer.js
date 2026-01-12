@@ -34,6 +34,7 @@ export class ILayerVisualizer {
          * @type {'none'|'done'|'error'}
          */
         this.state = 'none'
+        this.commandList = []
     }
 
     /**
@@ -48,12 +49,32 @@ export class ILayerVisualizer {
     }
 
     /**
+     * 设置渲染器及图层的状态
+     * @param {'none'|'done'|'error'} state 
+     */
+    setState(state) {
+        for (const layer of this.layers) {
+            layer.state = state
+        }
+        this.state = state
+    }
+
+    /**
      * 更新渲染器：子类实现该方法，完成合批几何体、批次表、绘图命令（DrawCommand）的构建，以及图层DrawCommand浅拷贝副本（shallow clone）的分配等工作
      * @param {*} frameState 
      * @param {*} tileset 
      */
     update(frameState, tileset) {
 
+    }
+
+    render(frameState) {
+        const commandList = this.commandList
+        if (commandList && commandList.length) {
+            for (const command of commandList) {
+                frameState.commandList.push(command)
+            }
+        }
     }
 
     /**

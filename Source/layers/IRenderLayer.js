@@ -2,6 +2,7 @@ import * as MVT from '@mapbox/vector-tile'
 import { StyleLayer } from '../style/StyleLayer'
 import { VectorTileset } from '../VectorTileset'
 import { VectorTileLOD } from '../VectorTileLOD'
+import { warnOnce } from 'maplibre-gl/src/util/util'
 
 /**
  * 渲染要素接口，对应数据要素中的一个图形（例如 MultiLineString 中的1个多段线）
@@ -72,6 +73,15 @@ export class IRenderLayer {
          * 这里用数组存储渲染器分配到图层的绘图命令（DrawCommand）副本，与合批构造结果一一对应。详细说明同 offsets 注释。
          */
         this.commandList = []
+        /**
+         * @type {'visible'|'none'}
+         */
+        this.visibility = 'visible'
+        /**
+         * 渲染图层状态
+         * @type {'none'|'done'|'error'}
+         */
+        this.state = 'none'
     }
 
     get id() {
@@ -83,13 +93,27 @@ export class IRenderLayer {
     }
 
     /**
-     * 更渲染图层，可在该方法内实现绘图命令构建、动态样式更新等图层渲染相关功能。该方法可以被子类重写或复用，内部从 commandList 属性获取绘图命令（DrawCommand）并加入 frameState.commandList，完成图层渲染对象到Cesium渲染管线的连接 
+     * 更渲染图层，可在该方法内实现绘图命令构建、动态样式更新等图层渲染准备相关功能。该方法可以被子类重写或复用
      * @param {Cesium.FrameState} frameState 
      * @param {VectorTileset} tileset 
      */
     update(frameState, tileset) {
         const visibility = this.style.layout.getDataConstValue('visibility', this.tile.z)
+        this.visibility = visibility
         if (visibility === 'none') return
+    }
+
+    /**
+     * 从 commandList 属性获取绘图命令（DrawCommand）并加入 frameState.commandList，完成图层渲染对象到Cesium渲染管线的连接。该方法可以被子类重写或复用
+     * @param {Cesium.FrameState} frameState 
+     * @param {VectorTileset} tileset 
+     * @returns 
+     */
+    render(frameState, tileset) {
+        const style = this.style, zoom = tileset.zoom
+        if (this.visibility === 'none' || zoom < style.minzoom || zoom >= style.maxzoom) {
+            return
+        }
 
         const commandList = this.commandList
         if (commandList && commandList.length) {

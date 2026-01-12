@@ -40,6 +40,10 @@ export class BackgroundRenderLayer extends IRenderLayer {
     * @param {VectorTileset} tileset 
     */
     update(frameState, tileset) {
+        super.update(frameState, tileset)
+
+        if (this.visibility == 'none') return
+
         if (!this.primitive) {
             this.createPrimitve(frameState, tileset)
         }
@@ -65,12 +69,15 @@ export class BackgroundRenderLayer extends IRenderLayer {
                     layerCommand.renderState = renderState
                     layerCommand.pass = Cesium.Pass.CESIUM_3D_TILE
                 }
+                this.state = 'done'
+            }
+
+            if (this.primitive._state === Cesium.PrimitiveState.FAILED) {
+                this.state = 'error'
             }
 
             frameState.commandList = preCommandList
         }
-
-        super.update(frameState, tileset)
     }
 
     destroy() {
