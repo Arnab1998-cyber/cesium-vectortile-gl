@@ -201,7 +201,3 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-
-Patents US9153063B2 US9865085B1 US10592242
-
-Patents pending US15/829,786 US16/850,266 US16/851,958
