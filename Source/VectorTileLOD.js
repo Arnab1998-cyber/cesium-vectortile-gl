@@ -7,6 +7,7 @@ import { EXTENT } from "maplibre-gl/src/data/extent";
 import Point from "@mapbox/point-geometry";
 import { subdivideVertexLine } from "maplibre-gl/src/render/subdivision";
 import { granularitySettings } from "./sources/granularitySettings";
+import { warnOnce } from "maplibre-gl/src/util/util";
 
 let tileDepthRenderSate = null
 let nextTileKey = 0
@@ -124,9 +125,10 @@ export class VectorTileLOD {
         this.lastVisitTime = 0
         /**
          * 瓦片调度状态
-         * @type {'none'|'done'|'error'}
+         * @type {'none'|'loading'|'loaded'|'ready'|'error'}
          */
         this.state = 'none'
+        this.renderable = false
 
         this.tileId = {
             x: this.x, y: this.y, z: this.z,
@@ -254,6 +256,9 @@ export class VectorTileLOD {
             const RenderLayer = RenderLayers[styleLayer.type]
             const LayerVisualizer = LayerVisualizers[styleLayer.type]
             const isBackgroundLayer = styleLayer.type === 'background'
+            if (!RenderLayer) {
+                warnOnce('不支持图层类型' + styleLayer.type)
+            }
             if ((!isBackgroundLayer && !sourceVectorTile) || !RenderLayer) continue
 
             const features = []
@@ -393,44 +398,73 @@ export class VectorTileLOD {
             frameState.commandList = preCommandList
         }
 
-        //瓦片id纹理
-        for (const tileIdCommand of tileIdCommands) {
-            renderList.tileIdCommands.push(tileIdCommand)
-        }
         //瓦片范围
         if (tileset.showTileColor && tileComandList.length) {
             renderList.tileCommands.push(...tileComandList)
-        }
-        //最后将瓦片深度写入主深度缓冲区，这样才能使Entity和GroundPrimitive等贴地对象能贴合瓦片内的矢量要素
-        if (tileDepthCommands.length) {
-            renderList.tileCommands.push(...tileDepthCommands)
         }
 
         //更新瓦片状态，根据状态执行不同的处理过程
 
         //请求瓦片数据，解析pbf/mvt文件
-        if (this.state == 'none' && tileset.numLoading < 1) {
+        if (this.state == 'none' && tileset.numLoading <= tileset.maxLoading) {
             tileset.numLoading++
             this.state = 'loading'
             this.getSources(tileset)
         }
 
         //创建渲染图层实例
-        if (this.state === 'loaded' && tileset.numInitializing < 1) {
+        if (this.state === 'loaded' && tileset.numInitializing < tileset.maxInitializing) {
             this.state = 'initializing'
             tileset.numInitializing++
             this.createRenderLayers(frameState, tileset)
         }
 
         if (this.state === 'ready') {
+            let visualizerReady = true, layersReady = true
             //更新图层渲染器
             for (const visualizer of this.visualizers) {
                 visualizer.update(frameState, tileset)
+                if (visualizer.state === 'none') {
+                    visualizerReady = false
+                }
             }
-            //将渲染图层追加到相应的渲染队列（渲染队列内部按图层id分组，确保不同瓦片的同一个id图层都在一组内，然后按图层顺序逐组渲染）
             for (const layer of this.layers) {
-                renderList.push(layer)
+                layer.update(frameState, tileset)
+                if (layer.visibility != 'none' && layer.state == 'none') {
+                    layersReady = false
+                }
             }
+            //标记瓦片是否可渲染
+            this.renderable = visualizerReady && layersReady
+        }
+    }
+
+    render(frameState, renderList, tileset) {
+        if (!this.renderable) {
+            return
+        }
+
+        const tileComandList = this.commandList
+        const tileIdCommands = this.tileIdCommands
+        const tileDepthCommands = this.tileDepthCommands
+
+        //将渲染图层追加到相应的渲染队列（渲染队列内部按图层id分组，确保不同瓦片的同一个id图层都在一组内，然后按图层顺序逐组渲染）
+        for (const layer of this.layers) {
+            renderList.push(layer)
+        }
+
+        for (const visualizer of this.visualizers) {
+            visualizer.render(frameState, tileset)
+        }
+
+        //瓦片id纹理
+        for (const tileIdCommand of tileIdCommands) {
+            renderList.tileIdCommands.push(tileIdCommand)
+        }
+
+        //最后将瓦片深度写入主深度缓冲区，这样才能使Entity和GroundPrimitive等贴地对象能贴合瓦片内的矢量要素
+        if (tileDepthCommands.length) {
+            renderList.tileCommands.push(...tileDepthCommands)
         }
     }
 
